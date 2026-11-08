@@ -1,40 +1,65 @@
-from __future__ import annotations
-import sys
-from shop.value_objects import Money
-from shop.models import Product, Cart
-from shop.services import (
-    Catalog, PercentageDiscount, CheckoutService, PaymentError,
-    get_payment_mode, get_min_stock
-)
-from shop.exporters import export_order, export_products_to_json, import_products_from_csv
+try:
+    from .models import Product
+    from .services import (
+        calculate_inventory_value,
+        find_product,
+        filter_by_category,
+        find_most_expensive
+    )
+except (ImportError, ValueError):
+    try:
+        from shop_manager.models import Product
+        from shop_manager.services import (
+            calculate_inventory_value,
+            find_product,
+            filter_by_category,
+            find_most_expensive
+        )
+    except (ImportError, ValueError):
+        try:
+            from lab_01.models import Product
+            from lab_01.services import (
+                calculate_inventory_value,
+                find_product,
+                filter_by_category,
+                find_most_expensive
+            )
+        except (ImportError, ValueError):
+            from models import Product
+            from services import (
+                calculate_inventory_value,
+                find_product,
+                filter_by_category,
+                find_most_expensive
+            )
 
 def main() -> None:
-    print("=" * 60)
-    print("🛒 ЛАБОРАТОРНА РОБОТА №6: АВТОМАТИЗОВАНЕ ТЕСТУВАННЯ")
-    print("📦 Варіант №3: Інтернет-магазин (E-commerce shop)")
-    print("=" * 60)
+    products = [
+        Product("Laptop", "Electronics", 35000.0, 10),
+        Product("Mouse", "Electronics", 1200.0, 50),
+        Product("Desk", "Furniture", 5500.0, 5),
+    ]
 
-    laptop = Product("Laptop", "Electronics", 35000.0, 5)
-    mouse = Product("Mouse", "Electronics", 1200.0, 20)
-    desk = Product("Desk", "Furniture", 5500.0, 3)
+    print("--- Список товарів ---")
+    for p in products:
+        print(f"{p.name} ({p.category}) - {p.price} грн, {p.quantity} шт.")
 
-    catalog = Catalog([laptop, mouse, desk])
-    print(f"Всього товарів у каталозі: {len(catalog)}")
-    print(f"Вартість залишків: {catalog.calculate_inventory_value():,.2f} UAH")
-    most_exp = catalog.find_most_expensive()
-    print(f"Найдорожчий товар: {most_exp.name if most_exp else 'Немає'}")
+    total_val = calculate_inventory_value(products)
+    print(f"\nЗагальна вартість залишків: {total_val} грн")
 
-    cart = Cart()
-    cart.add(laptop, 1)
-    cart.add(mouse, 2)
-    print(f"Сума кошика: {cart.total.amount:.2f} {cart.total.currency}")
+    expensive = find_most_expensive(products)
+    if expensive:
+        print(f"Найдорожчий товар: {expensive.name} ({expensive.price} грн)")
 
-    discount = PercentageDiscount(10)
-    discounted_total = discount.apply(cart.total)
-    print(f"Сума зі знижкою 10%: {discounted_total.amount:.2f} {discounted_total.currency}")
-    print(f"Режим оплати: {get_payment_mode()}")
-    print(f"Мінімальний запас: {get_min_stock()}")
-    print("=" * 60)
+    cat = "Electronics"
+    print(f"\nТовари в категорії '{cat}':")
+    for p in filter_by_category(products, cat):
+        print(f" - {p.name}")
+
+    search_name = "Desk"
+    found = find_product(products, search_name)
+    if found:
+        print(f"\nЗнайдено: {found.name}, Ціна: {found.price} грн, Залишок: {found.quantity}")
 
 if __name__ == "__main__":
     main()

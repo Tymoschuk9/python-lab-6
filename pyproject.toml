@@ -3,34 +3,12 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lab_06"
+name = "shop_manager"
 version = "0.1.0"
-description = "Laboratory work #6 (Variant 3)"
+description = "Laboratory work #1 - Shop Manager (Variant 3)"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = []
 
 [project.scripts]
-lab_06 = "lab_06.main:main"
-
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["lab_06*", "shop*"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = [".", "src"]
-addopts = ["-ra", "--strict-markers"]
-markers = [
-    "integration: integration tests",
-]
-
-[tool.coverage.run]
-branch = true
-source = ["shop", "lab_06"]
-omit = ["*/main.py", "main.py", "*/__main__.py"]
-
-[tool.coverage.report]
-show_missing = true
-skip_covered = false
-fail_under = 80
+shop-manager = "shop_manager.main:main"
