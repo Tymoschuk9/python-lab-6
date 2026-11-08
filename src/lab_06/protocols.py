@@ -1,5 +1,11 @@
 from typing import Protocol
-from .value_objects import Money
+try:
+    from .value_objects import Money
+except (ImportError, ValueError):
+    try:
+        from shop.value_objects import Money
+    except (ImportError, ValueError):
+        from value_objects import Money
 
 class PaymentGateway(Protocol):
     def pay(self, amount: Money) -> str:

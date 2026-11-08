@@ -1,7 +1,14 @@
+from __future__ import annotations
 from dataclasses import dataclass, field
-from .value_objects import Money
+try:
+    from .value_objects import Money
+except (ImportError, ValueError):
+    try:
+        from shop.value_objects import Money
+    except (ImportError, ValueError):
+        from value_objects import Money
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class Product:
     product_id: int
     name: str

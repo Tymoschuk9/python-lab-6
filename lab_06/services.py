@@ -1,7 +1,17 @@
 import os
-from .value_objects import Money
-from .models import Cart
-from .protocols import PaymentGateway, Notifier
+try:
+    from .value_objects import Money
+    from .models import Cart
+    from .protocols import PaymentGateway, Notifier
+except (ImportError, ValueError):
+    try:
+        from shop.value_objects import Money
+        from shop.models import Cart
+        from shop.protocols import PaymentGateway, Notifier
+    except (ImportError, ValueError):
+        from value_objects import Money
+        from models import Cart
+        from protocols import PaymentGateway, Notifier
 
 class PaymentError(Exception):
     pass
