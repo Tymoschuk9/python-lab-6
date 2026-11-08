@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "shop"
+name = "lab_06"
 version = "0.1.0"
 description = "Laboratory work #6 (Variant 3)"
 readme = "README.md"
@@ -14,9 +14,12 @@ dependencies = [
     "pytest-asyncio>=0.20.0"
 ]
 
+[project.scripts]
+lab_06 = "lab_06.main:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["shop*", "lab_06*"]
+include = ["lab_06*", "shop*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -28,8 +31,8 @@ markers = [
 
 [tool.coverage.run]
 branch = true
-source = ["shop"]
-omit = ["*/main.py", "main.py"]
+source = ["shop", "lab_06"]
+omit = ["*/main.py", "main.py", "*/__main__.py"]
 
 [tool.coverage.report]
 show_missing = true

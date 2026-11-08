@@ -158,3 +158,9 @@ async def test_async_external_provider():
     client.fetch_price.return_value = {"price": 250.0}
     price2 = await provider.get_price("Item2")
     assert price2 == pytest.approx(250.0)
+
+def test_main_cli(capsys):
+    from shop.main import main
+    main()
+    captured = capsys.readouterr()
+    assert "ЛАБОРАТОРНА РОБОТА" in captured.out
