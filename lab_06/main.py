@@ -2,8 +2,10 @@
 Лабораторна робота №6: Автоматизоване тестування Python-програм.
 Варіант №3: Інтернет-магазин (E-commerce shop).
 
-Повністю автономний модуль, що містить виробничий код (Domain, Services, Repositories,
-Exporters, Config) та вичерпний набір тестів на базі pytest (Unit & Integration).
+Повністю автономний виробничий та тестовий модуль без зовнішніх залежностей від інших робіт.
+Містить доменні моделі, сервіси, протоколи, імпорт/експорт, фікстури різного scope,
+параметризовані unit-тести, інтеграційні тести, використання Mock/MagicMock/AsyncMock,
+monkeypatch (env vars, attributes, functions), tmp_path та звітність про покриття коду.
 """
 
 from __future__ import annotations
@@ -13,26 +15,27 @@ import csv
 import json
 import os
 import sys
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Protocol
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
 
 # =====================================================================
-# 1. DOMAIN EXCEPTIONS
+# 1. ДОМЕННІ ВИНЯТКИ (DOMAIN EXCEPTIONS)
 # =====================================================================
 
 class ShopError(Exception):
-    """Базовий виняток для проблем доменної області інтернет-магазину."""
+    """Базовий виняток предметної області інтернет-магазину."""
     pass
 
 
 class ValidationError(ShopError):
-    """Виникає при спробі створити або змінити сутність з некоректними даними."""
+    """Помилка валідації вхідних даних доменної сутності."""
 
     def __init__(self, message: str, field_name: str) -> None:
         super().__init__(message)
@@ -40,31 +43,31 @@ class ValidationError(ShopError):
 
 
 class ProductNotFoundError(ShopError):
-    """Виникає, коли запитаний товар не знайдено в каталозі."""
+    """Виникає при спробі доступу до неіснуючого товару."""
     pass
 
 
 class DataImportError(ShopError):
-    """Виникає під час синтаксичного розбору або імпорту файлів даних."""
+    """Виникає при помилках структури або синтаксису імпортованих файлів."""
     pass
 
 
 class PaymentError(ShopError):
-    """Виникає при збоях у зовнішній платіжній системі."""
+    """Виникає при помилках взаємодії із зовнішнім платіжним шлюзом."""
     pass
 
 
 class ProviderUnavailableError(ShopError):
-    """Виникає при недоступності зовнішнього провайдера валютних курсів."""
+    """Виникає при збоях зовнішніх провайдерів валютних курсів або сервісів."""
     pass
 
 
 # =====================================================================
-# 2. VALUE OBJECTS & MODELS
+# 2. VALUE OBJECTS & ENTITIES (ДОМЕННІ МОДЕЛІ)
 # =====================================================================
 
 class ProductCategory(str, Enum):
-    """Категорії товарів інтернет-магазину."""
+    """Перелік категорій товарів магазину."""
     ELECTRONICS = "Electronics"
     CLOTHING = "Clothing"
     BOOKS = "Books"
@@ -74,7 +77,7 @@ class ProductCategory(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class Money:
-    """Незмінний об'єкт-значення (Value Object) для представлення грошових сум."""
+    """Незмінний об'єкт-значення (Value Object) для грошових операцій."""
     amount: float
     currency: str = "UAH"
 
@@ -93,7 +96,7 @@ class Money:
 
     def __mul__(self, factor: float) -> Money:
         if factor < 0:
-            raise ValueError("Множник не може бути від'ємним")
+            raise ValueError("Множник вартості не може бути від'ємним")
         return Money(round(self.amount * factor, 2), self.currency)
 
     def __eq__(self, other: object) -> bool:
@@ -104,7 +107,7 @@ class Money:
 
 @dataclass(slots=True)
 class Product:
-    """Доменна модель товару інтернет-магазину."""
+    """Доменна сутність товару в каталозі."""
     product_id: int
     name: str
     category: ProductCategory
@@ -113,24 +116,24 @@ class Product:
 
     def __post_init__(self) -> None:
         if self.product_id <= 0:
-            raise ValidationError("ID товару повинен бути додатним числом", "product_id")
+            raise ValidationError("ID товару повинен бути додатним цілим числом", "product_id")
         if not self.name or not self.name.strip():
             raise ValidationError("Назва товару не може бути порожньою", "name")
         if self.quantity < 0:
-            raise ValidationError("Кількість товару на складі не може бути від'ємною", "quantity")
+            raise ValidationError("Кількість товару не може бути від'ємною", "quantity")
 
     @property
     def total_stock_value(self) -> Money:
-        """Повертає сумарну вартість усіх одиниць даного товару на складі."""
+        """Загальна балансова вартість залишку даної позиції."""
         return self.price * self.quantity
 
 
 # =====================================================================
-# 3. PROTOCOLS (INTERFACES)
+# 3. ІНТЕРФЕЙСИ (PROTOCOLS)
 # =====================================================================
 
 class ProductRepository(Protocol):
-    """Протокол сховища товарів."""
+    """Контракт сховища товарів."""
 
     def add(self, product: Product) -> None:
         ...
@@ -146,39 +149,58 @@ class ProductRepository(Protocol):
 
 
 class DiscountPolicy(Protocol):
-    """Протокол розрахунку знижки."""
+    """Контракт розрахунку знижки."""
 
     def apply(self, total: Money) -> Money:
         ...
 
 
 class Notifier(Protocol):
-    """Протокол системи надсилання сповіщень."""
+    """Контракт каналу сповіщення користувачів."""
 
     def send_notification(self, recipient: str, message: str) -> None:
         ...
 
 
 class PaymentGateway(Protocol):
-    """Протокол платіжного шлюзу."""
+    """Контракт зовнішнього платіжного шлюзу."""
 
     def process_payment(self, amount: Money) -> str:
         ...
 
 
 class ExternalPriceProvider(Protocol):
-    """Асинхронний інтерфейс отримання курсів та цін від зовнішнього постачальника."""
+    """Асинхронний інтерфейс зовнішнього постачальника валютних курсів."""
 
     async def get_exchange_rate(self, target_currency: str) -> float:
         ...
 
 
+class AuditSession(Protocol):
+    """Контракт контекстного менеджера для аудиту замовлень."""
+
+    def __enter__(self) -> AuditSession:
+        ...
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        ...
+
+    def record_step(self, step_name: str) -> None:
+        ...
+
+
 # =====================================================================
-# 4. REPOSITORY & SERVICES
+# 4. РЕПОЗИТОРІЙ ТА БІЗНЕС-СЕРВІСИ (APPLICATION SERVICES)
 # =====================================================================
 
+def generate_order_id(prefix: str = "ORD") -> str:
+    """Генерує базовий системний код замовлення."""
+    timestamp = int(time.time())
+    return f"{prefix}-{timestamp}"
+
+
 class InMemoryProductRepository:
-    """In-memory реалізація репозиторію товарів."""
+    """In-memory сховище товарів для швидкої та ізольованої роботи."""
 
     def __init__(self) -> None:
         self._storage: Dict[int, Product] = {}
@@ -195,22 +217,25 @@ class InMemoryProductRepository:
     def remove(self, product_id: int) -> bool:
         return self._storage.pop(product_id, None) is not None
 
+    def __len__(self) -> int:
+        return len(self._storage)
+
 
 class PercentageDiscount:
-    """Політика відсоткової знижки (0-100%)."""
+    """Політика знижки у відсотках [0; 100]."""
 
     def __init__(self, percent: float) -> None:
         if not (0.0 <= percent <= 100.0):
-            raise ValueError(f"Відсоток знижки має бути в межах [0; 100], отримано: {percent}")
+            raise ValueError(f"Відсоток знижки має знаходитися в межах [0; 100], отримано: {percent}")
         self.percent = percent
 
     def apply(self, total: Money) -> Money:
-        discounted_amount = total.amount * (1.0 - self.percent / 100.0)
-        return Money(round(discounted_amount, 2), total.currency)
+        discounted = total.amount * (1.0 - self.percent / 100.0)
+        return Money(round(discounted, 2), total.currency)
 
 
 class CatalogService:
-    """Сервіс керування каталогом та аналітики складських залишків."""
+    """Сервіс управління каталогом, аналітики складських запасів і пошуку."""
 
     def __init__(self, repository: ProductRepository) -> None:
         self.repository = repository
@@ -229,27 +254,27 @@ class CatalogService:
         if not normalized:
             return []
         return [
-            p for p in self.repository.get_all()
-            if normalized in p.name.lower()
+            prod for prod in self.repository.get_all()
+            if normalized in prod.name.lower()
         ]
 
     def filter_by_category(self, category: ProductCategory) -> List[Product]:
         return [
-            p for p in self.repository.get_all()
-            if p.category == category
+            prod for prod in self.repository.get_all()
+            if prod.category == category
         ]
 
     def calculate_total_inventory_value(self) -> Money:
-        all_products = self.repository.get_all()
-        if not all_products:
+        products = self.repository.get_all()
+        if not products:
             return Money(0.0)
 
         total = 0.0
-        currency = all_products[0].price.currency
-        for p in all_products:
-            if p.price.currency != currency:
+        currency = products[0].price.currency
+        for prod in products:
+            if prod.price.currency != currency:
                 raise ValueError("Товари в каталозі мають різні валюти цін")
-            total += p.total_stock_value.amount
+            total += prod.total_stock_value.amount
         return Money(round(total, 2), currency)
 
     def get_most_expensive_product(self) -> Optional[Product]:
@@ -260,22 +285,24 @@ class CatalogService:
 
     def get_low_stock_products(self, threshold: int) -> List[Product]:
         if threshold < 0:
-            raise ValueError("Порогове значення залишку не може бути від'ємним")
-        return [p for p in self.repository.get_all() if p.quantity <= threshold]
+            raise ValueError("Поріг залишку товару не може бути від'ємним")
+        return [prod for prod in self.repository.get_all() if prod.quantity <= threshold]
 
 
 class CheckoutService:
-    """Сервіс оформлення замовлення з підтримкою сповіщень та платіжного шлюзу."""
+    """Сервіс оформлення покупок з інтеграцією платежів, аудиту та сповіщень."""
 
     def __init__(
         self,
         repository: ProductRepository,
         payment_gateway: PaymentGateway,
         notifier: Notifier,
+        audit_session: Optional[AuditSession] = None,
     ) -> None:
         self.repository = repository
         self.payment_gateway = payment_gateway
         self.notifier = notifier
+        self.audit_session = audit_session
 
     def checkout(
         self,
@@ -286,6 +313,10 @@ class CheckoutService:
         if not product_ids:
             raise ValueError("Список товарів для замовлення не може бути порожнім")
 
+        if self.audit_session:
+            with self.audit_session:
+                self.audit_session.record_step("start_checkout")
+
         total_sum = 0.0
         currency = "UAH"
 
@@ -294,7 +325,7 @@ class CheckoutService:
             if product is None:
                 raise ProductNotFoundError(f"Неможливо оформити замовлення: товар {pid} відсутній")
             if product.quantity <= 0:
-                raise ShopError(f"Товар {product.name} закінчився на складі")
+                raise ShopError(f"Товар '{product.name}' відсутній на складі")
             total_sum += product.price.amount
             currency = product.price.currency
 
@@ -302,16 +333,21 @@ class CheckoutService:
         if discount:
             order_total = discount.apply(order_total)
 
-        payment_id = self.payment_gateway.process_payment(order_total)
+        txn_id = self.payment_gateway.process_payment(order_total)
+
+        if self.audit_session:
+            with self.audit_session:
+                self.audit_session.record_step("payment_completed")
+
         self.notifier.send_notification(
             customer_email,
-            f"Замовлення успішно сплачено на суму {order_total.amount} {order_total.currency}. Код транзакції: {payment_id}"
+            f"Оплата успішна: {order_total.amount} {order_total.currency}. Транзакція: {txn_id}"
         )
-        return payment_id
+        return txn_id
 
 
 class AsyncCurrencyConverter:
-    """Асинхронний сервіс перерахунку вартості залишків у зовнішню валюту."""
+    """Асинхронний сервіс конвертації цін товарів у цільову валюту."""
 
     def __init__(self, provider: ExternalPriceProvider) -> None:
         self.provider = provider
@@ -319,75 +355,68 @@ class AsyncCurrencyConverter:
     async def convert_product_price(self, product: Product, target_currency: str) -> Money:
         rate = await self.provider.get_exchange_rate(target_currency)
         if rate <= 0.0:
-            raise ValueError(f"Некоректний валютний курс: {rate}")
-        converted = round(product.price.amount * rate, 2)
-        return Money(converted, target_currency)
+            raise ValueError(f"Некоректний обмінний курс від провайдера: {rate}")
+        converted_amount = round(product.price.amount * rate, 2)
+        return Money(converted_amount, target_currency)
 
 
 # =====================================================================
-# 5. CONFIGURATION & I/O (CSV / JSON)
+# 5. КОНФІГУРАЦІЯ ТА I/O (CSV / JSON)
 # =====================================================================
 
 class AppConfig:
-    """Конфігурація застосунку із читанням параметрів середовища."""
+    """Клас конфігурації магазину з підтримкою змінних середовища та констант."""
+    DEFAULT_CURRENCY: str = "UAH"
+    API_VERSION: str = "v1"
 
-    @staticmethod
-    def get_min_stock_threshold() -> int:
+    @classmethod
+    def get_min_stock_threshold(cls) -> int:
         raw_val = os.getenv("SHOP_MIN_STOCK_THRESHOLD", "5")
         try:
             val = int(raw_val)
-            if val < 0:
-                return 5
-            return val
+            return 5 if val < 0 else val
         except ValueError:
             return 5
 
-    @staticmethod
-    def get_environment() -> str:
+    @classmethod
+    def get_environment(cls) -> str:
         return os.getenv("SHOP_ENV", "development")
 
 
 class ProductIO:
-    """Модуль імпорту та експорту товарів у формати CSV та JSON."""
+    """Модуль завантаження та вивантаження даних каталогу (CSV/JSON)."""
 
     @staticmethod
     def import_from_csv(file_path: Path) -> List[Product]:
         if not file_path.exists():
-            raise FileNotFoundError(f"Файл {file_path} не існує")
+            raise FileNotFoundError(f"Файл не знайдено: {file_path}")
 
         products: List[Product] = []
         with open(file_path, mode="r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
-            required_fields = {"product_id", "name", "category", "price", "currency", "quantity"}
-            if not reader.fieldnames or not required_fields.issubset(set(reader.fieldnames)):
-                raise DataImportError("CSV файл не містить необхідних заголовків стовпців")
+            required_cols = {"product_id", "name", "category", "price", "currency", "quantity"}
+            if not reader.fieldnames or not required_cols.issubset(set(reader.fieldnames)):
+                raise DataImportError("CSV файл не містить обов'язкових заголовків")
 
             for row_idx, row in enumerate(reader, start=2):
                 try:
-                    product_id = int(row["product_id"])
-                    name = row["name"]
-                    category = ProductCategory(row["category"])
-                    price_val = float(row["price"])
-                    currency = row["currency"]
-                    quantity = int(row["quantity"])
-
                     product = Product(
-                        product_id=product_id,
-                        name=name,
-                        category=category,
-                        price=Money(price_val, currency),
-                        quantity=quantity,
+                        product_id=int(row["product_id"]),
+                        name=row["name"],
+                        category=ProductCategory(row["category"]),
+                        price=Money(float(row["price"]), row["currency"]),
+                        quantity=int(row["quantity"]),
                     )
                     products.append(product)
                 except (ValueError, KeyError, ValidationError) as err:
                     raise DataImportError(
-                        f"Помилка в рядку {row_idx}: некоректні дані товару ({err})"
+                        f"Помилка даних у рядку {row_idx}: {err}"
                     ) from err
         return products
 
     @staticmethod
     def export_to_json(products: List[Product], file_path: Path) -> None:
-        data = [
+        records = [
             {
                 "product_id": p.product_id,
                 "name": p.name,
@@ -399,535 +428,590 @@ class ProductIO:
             }
             for p in products
         ]
-        file_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        file_path.write_text(json.dumps(records, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 # =====================================================================
-# 6. PYTEST FIXTURES (conftest / shared setup)
+# 6. PYTEST FIXTURES (РІЗНІ SCOPES ТА ФАБРИКИ)
 # =====================================================================
 
-@pytest.fixture
-def laptop_product() -> Product:
-    """Фікстура одиничного товару (ноутбук)."""
-    return Product(
-        product_id=1,
-        name="Lenovo ThinkPad",
-        category=ProductCategory.ELECTRONICS,
-        price=Money(32000.0, "UAH"),
-        quantity=8,
-    )
+@pytest.fixture(scope="session")
+def session_currency() -> str:
+    """Фікстура рівня сесії: базова валюта для тестування всього набору."""
+    return "UAH"
 
 
-@pytest.fixture
-def sample_inventory() -> List[Product]:
-    """Фікстура списку товарів різних категорій для тестування каталогу."""
+@pytest.fixture(scope="module")
+def module_sample_products_data(session_currency: str) -> List[Dict[str, Any]]:
+    """Фікстура рівня модуля: початковий набір словників для ініціалізації товарів."""
     return [
-        Product(1, "ThinkPad X1", ProductCategory.ELECTRONICS, Money(45000.0), 3),
-        Product(2, "Logitech MX Master", ProductCategory.ELECTRONICS, Money(3800.0), 12),
-        Product(3, "Python Design Patterns", ProductCategory.BOOKS, Money(950.0), 20),
-        Product(4, "Clean Architecture Book", ProductCategory.BOOKS, Money(1100.0), 5),
-        Product(5, "Warm Winter Hoodie", ProductCategory.CLOTHING, Money(2200.0), 2),
+        {"product_id": 1, "name": "Ultrabook 14", "category": ProductCategory.ELECTRONICS, "price": 38000.0, "quantity": 4},
+        {"product_id": 2, "name": "Wireless Mouse", "category": ProductCategory.ELECTRONICS, "price": 1200.0, "quantity": 25},
+        {"product_id": 3, "name": "Architecture Patterns", "category": ProductCategory.BOOKS, "price": 980.0, "quantity": 8},
+        {"product_id": 4, "name": "Refactoring Guide", "category": ProductCategory.BOOKS, "price": 1150.0, "quantity": 2},
+        {"product_id": 5, "name": "Developer Hoodie", "category": ProductCategory.CLOTHING, "price": 2400.0, "quantity": 1},
     ]
 
 
-@pytest.fixture
-def product_repository(sample_inventory: List[Product]) -> InMemoryProductRepository:
-    """Фікстура попередньо заповненого In-memory репозиторію."""
+@pytest.fixture(scope="function")
+def laptop_product(session_currency: str) -> Product:
+    """Фікстура рівня функції: типовий екземпляр продукту."""
+    return Product(
+        product_id=10,
+        name="Dell XPS 15",
+        category=ProductCategory.ELECTRONICS,
+        price=Money(65000.0, session_currency),
+        quantity=3,
+    )
+
+
+@pytest.fixture(scope="function")
+def product_repository(module_sample_products_data: List[Dict[str, Any]], session_currency: str) -> InMemoryProductRepository:
+    """Фікстура функції: попередньо заповнене сховище."""
     repo = InMemoryProductRepository()
-    for prod in sample_inventory:
+    for item in module_sample_products_data:
+        prod = Product(
+            product_id=item["product_id"],
+            name=item["name"],
+            category=item["category"],
+            price=Money(item["price"], session_currency),
+            quantity=item["quantity"],
+        )
         repo.add(prod)
     return repo
 
 
-@pytest.fixture
+@pytest.fixture(scope="function")
 def catalog_service(product_repository: InMemoryProductRepository) -> CatalogService:
-    """Фікстура CatalogService із заповненим репозиторієм."""
+    """Фікстура сервісу каталогу."""
     return CatalogService(product_repository)
 
 
-@pytest.fixture
+@pytest.fixture(scope="function")
 def product_factory() -> Callable[..., Product]:
-    """Fixture-фабрика для динамічного створення товарів у тестах."""
-    counter = 100
+    """Fixture-фабрика для динамічного створення доменних товарів у тестах."""
+    id_sequence = 1000
 
-    def _factory(
-        name: str = "Test Item",
+    def _create(
+        name: str = "Test Product",
         category: ProductCategory = ProductCategory.ELECTRONICS,
-        price_amount: float = 1000.0,
+        price_val: float = 100.0,
+        currency: str = "UAH",
         quantity: int = 10,
     ) -> Product:
-        nonlocal counter
-        counter += 1
+        nonlocal id_sequence
+        id_sequence += 1
         return Product(
-            product_id=counter,
+            product_id=id_sequence,
             name=name,
             category=category,
-            price=Money(price_amount),
+            price=Money(price_val, currency),
             quantity=quantity,
         )
 
-    return _factory
+    return _create
 
 
 # =====================================================================
-# 7. UNIT TESTS (24 tests >= 15 required)
+# 7. UNIT TESTS (NORMAL, BOUNDARY, INVALID, EXCEPTIONS, MOCKS, MONKEYPATCH)
 # =====================================================================
 
-# --- Money Value Object Tests ---
+# --- Перевірка Value Object Money ---
 
-def test_money_creation_and_attributes() -> None:
-    money = Money(150.75, "USD")
-    assert money.amount == 150.75
+def test_money_creation_and_fields() -> None:
+    money = Money(250.50, "USD")
+    assert money.amount == 250.50
     assert money.currency == "USD"
 
 
-def test_money_negative_amount_raises_exception() -> None:
+def test_money_negative_amount_raises_value_error() -> None:
     with pytest.raises(ValueError, match="не може бути від'ємною"):
-        Money(-10.0, "UAH")
+        Money(-0.01, "UAH")
 
 
 def test_money_addition_same_currency() -> None:
-    m1 = Money(100.25, "UAH")
-    m2 = Money(49.75, "UAH")
-    total = m1 + m2
-    assert total.amount == pytest.approx(150.0)
-    assert total.currency == "UAH"
+    m1 = Money(120.35, "UAH")
+    m2 = Money(80.65, "UAH")
+    result = m1 + m2
+    assert result.amount == pytest.approx(201.00)
+    assert result.currency == "UAH"
 
 
-def test_money_addition_currency_mismatch_raises_exception() -> None:
+def test_money_addition_different_currency_raises_value_error() -> None:
     m1 = Money(100.0, "UAH")
-    m2 = Money(100.0, "USD")
+    m2 = Money(100.0, "EUR")
     with pytest.raises(ValueError, match="різних валютах"):
         _ = m1 + m2
 
 
-# --- Product Creation & Boundary Tests (Parameterized) ---
+def test_money_multiplication_and_negative_factor() -> None:
+    m = Money(50.0, "UAH")
+    assert (m * 3.5).amount == pytest.approx(175.0)
+
+    with pytest.raises(ValueError, match="не може бути від'ємним"):
+        _ = m * -1.5
+
+
+# --- Параметризовані тести Product (Граничні та Некоректні значення) ---
 
 @pytest.mark.parametrize(
     "price,quantity",
     [
-        (0.0, 0),        # Нижня гранична межа: безкоштовний подарунок, нульовий залишок
-        (0.01, 1),       # Мінімальна додатна ціна
-        (999999.99, 1000),  # Великі коректні значення
+        (0.0, 0),             # Нижня гранична межа: подарунок, нуль залишків
+        (0.01, 1),            # Мінімальні додатні значення
+        (1_000_000.0, 5000),  # Великі нормальні значення
     ],
-    ids=["zero_boundary", "minimal_positive", "large_valid"]
+    ids=["boundary_zero_price_qty", "boundary_minimal_positive", "large_valid_numbers"]
 )
-def test_product_boundary_valid_values(price: float, quantity: int) -> None:
-    prod = Product(
-        product_id=1,
-        name="Boundary Item",
-        category=ProductCategory.HOME,
-        price=Money(price),
-        quantity=quantity,
-    )
-    assert prod.price.amount == pytest.approx(price)
-    assert prod.quantity == quantity
+def test_product_boundary_values(price: float, quantity: int) -> None:
+    p = Product(1, "Boundary Test Item", ProductCategory.HOME, Money(price), quantity)
+    assert p.price.amount == pytest.approx(price)
+    assert p.quantity == quantity
 
 
 @pytest.mark.parametrize(
-    "invalid_id,name,quantity,expected_field",
+    "p_id,name,quantity,expected_field",
     [
-        (0, "Item", 5, "product_id"),
-        (-5, "Item", 5, "product_id"),
-        (1, "", 5, "name"),
-        (1, "   ", 5, "name"),
-        (1, "Item", -1, "quantity"),
+        (0, "Desk Lamp", 5, "product_id"),
+        (-1, "Desk Lamp", 5, "product_id"),
+        (2, "", 5, "name"),
+        (3, "   ", 5, "name"),
+        (4, "Desk Lamp", -1, "quantity"),
     ],
     ids=["zero_id", "negative_id", "empty_name", "whitespace_name", "negative_quantity"]
 )
-def test_product_invalid_inputs_raise_validation_error(
-    invalid_id: int, name: str, quantity: int, expected_field: str
-) -> None:
+def test_product_validation_errors(p_id: int, name: str, quantity: int, expected_field: str) -> None:
     with pytest.raises(ValidationError) as exc_info:
-        Product(
-            product_id=invalid_id,
-            name=name,
-            category=ProductCategory.BOOKS,
-            price=Money(100.0),
-            quantity=quantity,
-        )
+        Product(p_id, name, ProductCategory.HOME, Money(100.0), quantity)
     assert exc_info.value.field_name == expected_field
 
 
-def test_product_total_stock_value_calculation(laptop_product: Product) -> None:
-    # 32000.0 * 8 = 256000.0
-    assert laptop_product.total_stock_value == Money(256000.0, "UAH")
+def test_product_total_stock_value(laptop_product: Product) -> None:
+    # 65000 * 3 = 195000
+    assert laptop_product.total_stock_value == Money(195000.0, "UAH")
 
 
-# --- CatalogService Unit Tests ---
+# --- Тести CatalogService ---
 
-def test_catalog_add_and_find_by_id(catalog_service: CatalogService, product_factory: Callable[..., Product]) -> None:
-    new_prod = product_factory(name="Mechanical Keyboard", price_amount=3500.0)
-    catalog_service.add_product(new_prod)
+def test_catalog_find_by_id_success_and_not_found(catalog_service: CatalogService) -> None:
+    prod = catalog_service.find_by_id(1)
+    assert prod.name == "Ultrabook 14"
 
-    found = catalog_service.find_by_id(new_prod.product_id)
-    assert found.name == "Mechanical Keyboard"
-    assert found.price.amount == 3500.0
-
-
-def test_catalog_find_by_id_not_found_raises_custom_exception(catalog_service: CatalogService) -> None:
     with pytest.raises(ProductNotFoundError, match="не знайдено в каталозі"):
-        catalog_service.find_by_id(9999)
+        catalog_service.find_by_id(99999)
 
 
 def test_catalog_search_by_name(catalog_service: CatalogService) -> None:
-    results = catalog_service.search_by_name("book")
-    assert len(results) == 2
-    assert all("Book" in p.name or "book" in p.name.lower() for p in results)
+    results = catalog_service.search_by_name("guide")
+    assert len(results) == 1
+    assert results[0].product_id == 4
 
-
-def test_catalog_search_empty_query_returns_empty_list(catalog_service: CatalogService) -> None:
     assert catalog_service.search_by_name("") == []
-    assert catalog_service.search_by_name("   ") == []
+    assert catalog_service.search_by_name("non-existent-token") == []
 
 
 def test_catalog_filter_by_category(catalog_service: CatalogService) -> None:
-    books = catalog_service.filter_by_category(ProductCategory.BOOKS)
-    assert len(books) == 2
     electronics = catalog_service.filter_by_category(ProductCategory.ELECTRONICS)
     assert len(electronics) == 2
     food = catalog_service.filter_by_category(ProductCategory.FOOD)
     assert food == []
 
 
-def test_catalog_total_inventory_value(catalog_service: CatalogService) -> None:
-    # ThinkPad: 45000*3=135000; Mouse: 3800*12=45600; PyBook: 950*20=19000;
-    # CleanArch: 1100*5=5500; Hoodie: 2200*2=4400. Sum = 209500.0
-    total = catalog_service.calculate_total_inventory_value()
-    assert total.amount == pytest.approx(209500.0)
-
-
-def test_catalog_empty_inventory_calculations() -> None:
+def test_catalog_inventory_value_and_empty_state() -> None:
     empty_catalog = CatalogService(InMemoryProductRepository())
     assert empty_catalog.calculate_total_inventory_value() == Money(0.0)
     assert empty_catalog.get_most_expensive_product() is None
 
 
-def test_catalog_most_expensive_product(catalog_service: CatalogService) -> None:
-    most_expensive = catalog_service.get_most_expensive_product()
-    assert most_expensive is not None
-    assert most_expensive.product_id == 1
-    assert most_expensive.price.amount == 45000.0
+def test_catalog_inventory_value_mixed_currency_raises_value_error(
+    catalog_service: CatalogService, product_factory: Callable[..., Product]
+) -> None:
+    foreign_prod = product_factory(name="US Import", price_val=50.0, currency="USD")
+    catalog_service.add_product(foreign_prod)
+
+    with pytest.raises(ValueError, match="різні валюти цін"):
+        catalog_service.calculate_total_inventory_value()
 
 
-def test_catalog_low_stock_filtering(catalog_service: CatalogService) -> None:
-    low_stock = catalog_service.get_low_stock_products(threshold=3)
-    # ThinkPad (3) та Hoodie (2)
-    assert len(low_stock) == 2
-    assert {p.product_id for p in low_stock} == {1, 5}
+def test_catalog_get_low_stock_products(catalog_service: CatalogService) -> None:
+    low = catalog_service.get_low_stock_products(threshold=2)
+    # Refactoring Guide (2) та Developer Hoodie (1)
+    assert len(low) == 2
+    assert {p.product_id for p in low} == {4, 5}
 
-
-def test_catalog_low_stock_negative_threshold_raises_value_error(catalog_service: CatalogService) -> None:
     with pytest.raises(ValueError, match="не може бути від'ємним"):
         catalog_service.get_low_stock_products(threshold=-1)
 
 
-# --- Discount Policy Unit Tests (Parameterized) ---
+# --- Тести знижок (PercentageDiscount) ---
 
 @pytest.mark.parametrize(
     "percent,original,expected",
     [
-        (0.0, 1000.0, 1000.0),    # Нульова знижка
-        (10.0, 1000.0, 900.0),     # 10%
-        (25.5, 200.0, 149.0),      # Дробовий відсоток
-        (100.0, 500.0, 0.0),       # 100% знижка (повністю безкоштовно)
+        (0.0, 500.0, 500.0),
+        (15.0, 1000.0, 850.0),
+        (33.33, 300.0, 200.01),
+        (100.0, 800.0, 0.0),
     ],
-    ids=["0_percent", "10_percent", "fractional_percent", "100_percent"]
+    ids=["zero_discount", "fifteen_percent", "fractional_percent", "full_free_100_percent"]
 )
 def test_percentage_discount_calculation(percent: float, original: float, expected: float) -> None:
     policy = PercentageDiscount(percent)
-    result = policy.apply(Money(original))
+    result = policy.apply(Money(original, "UAH"))
     assert result.amount == pytest.approx(expected)
 
 
-@pytest.mark.parametrize(
-    "invalid_percent",
-    [-0.01, -15.0, 100.01, 150.0],
-    ids=["below_zero", "negative_large", "above_100", "large_invalid"]
-)
-def test_percentage_discount_invalid_raises_value_error(invalid_percent: float) -> None:
+@pytest.mark.parametrize("invalid_p", [-1.0, -0.01, 100.01, 150.0])
+def test_percentage_discount_invalid_raises_error(invalid_p: float) -> None:
     with pytest.raises(ValueError, match="в межах"):
-        PercentageDiscount(invalid_percent)
+        PercentageDiscount(invalid_p)
 
 
-# --- CheckoutService Tests with Mocks & Interaction Assertions ---
+# --- Тести взаємодії об'єктів з Mock ---
 
-def test_checkout_successful_flow_with_mocks(product_repository: InMemoryProductRepository) -> None:
-    # Arrange
-    gateway_mock = Mock(spec=PaymentGateway)
-    gateway_mock.process_payment.return_value = "TXN-998877"
+def test_checkout_successful_interaction_with_mock(product_repository: InMemoryProductRepository) -> None:
+    # 1. Arrange: Мок платіжного шлюзу та нотифікатора
+    payment_mock = Mock(spec=PaymentGateway)
+    payment_mock.process_payment.return_value = "TXN-TEST-12345"
 
     notifier_mock = Mock(spec=Notifier)
-    service = CheckoutService(product_repository, gateway_mock, notifier_mock)
-    discount = PercentageDiscount(10.0)
+    service = CheckoutService(product_repository, payment_mock, notifier_mock)
 
-    # Act
-    # Купуємо товар 3 (950 грн) та 4 (1100 грн). Сума = 2050 грн. Знижка 10% -> 1845 грн
-    txn_id = service.checkout("student@univ.edu.ua", [3, 4], discount=discount)
+    # 2. Act: Товари 3 (980) та 4 (1150). Сума = 2130 грн. Знижка 10% -> 1917 грн.
+    txn = service.checkout("test@example.com", [3, 4], discount=PercentageDiscount(10.0))
 
-    # Assert
-    assert txn_id == "TXN-998877"
-    gateway_mock.process_payment.assert_called_once_with(Money(1845.0, "UAH"))
+    # 3. Assert: Перевірка контрактів взаємодії
+    assert txn == "TXN-TEST-12345"
+    payment_mock.process_payment.assert_called_once_with(Money(1917.0, "UAH"))
     notifier_mock.send_notification.assert_called_once()
     recipient, msg = notifier_mock.send_notification.call_args[0]
-    assert recipient == "student@univ.edu.ua"
-    assert "TXN-998877" in msg
+    assert recipient == "test@example.com"
+    assert "TXN-TEST-12345" in msg
 
 
-def test_checkout_payment_failure_side_effect(product_repository: InMemoryProductRepository) -> None:
-    # Arrange: Імітація збою платіжного шлюзу через side_effect
-    gateway_mock = Mock(spec=PaymentGateway)
-    gateway_mock.process_payment.side_effect = PaymentError("Банківський сервіс тимчасово недоступний")
-
+def test_checkout_payment_gateway_failure_side_effect(product_repository: InMemoryProductRepository) -> None:
+    # Arrange
+    payment_mock = Mock(spec=PaymentGateway)
+    payment_mock.process_payment.side_effect = PaymentError("Сервер платежів відхилив запит")
     notifier_mock = Mock(spec=Notifier)
-    service = CheckoutService(product_repository, gateway_mock, notifier_mock)
 
-    # Act & Assert
-    with pytest.raises(PaymentError, match="Банківський сервіс"):
-        service.checkout("client@example.com", [1])
+    service = CheckoutService(product_repository, payment_mock, notifier_mock)
 
-    # Перевірка контракту взаємодії: при невдачі оплати сповіщення КЛІЄНТУ НЕ НАДСИЛАЄТЬСЯ
+    # Act & Assert: Виняток прокидається нагору
+    with pytest.raises(PaymentError, match="Сервер платежів відхилив запит"):
+        service.checkout("client@domain.ua", [1])
+
+    # Контроль взаємодії: при збої оплати повідомлення клієнту НЕ надсилається
     notifier_mock.send_notification.assert_not_called()
 
 
-def test_checkout_empty_items_raises_value_error(product_repository: InMemoryProductRepository) -> None:
+def test_checkout_empty_items_and_out_of_stock(product_repository: InMemoryProductRepository) -> None:
     service = CheckoutService(product_repository, Mock(spec=PaymentGateway), Mock(spec=Notifier))
+
     with pytest.raises(ValueError, match="не може бути порожнім"):
-        service.checkout("client@example.com", [])
+        service.checkout("client@domain.ua", [])
+
+    # Моделюємо товар із нульовим залишком
+    zero_stock_product = Product(99, "Zero Stock Item", ProductCategory.BOOKS, Money(100.0), 0)
+    product_repository.add(zero_stock_product)
+
+    with pytest.raises(ShopError, match="відсутній на складі"):
+        service.checkout("client@domain.ua", [99])
 
 
-# --- Configuration Test with monkeypatch ---
+# --- Тести з використанням MagicMock (Dunder methods, Context Manager) ---
 
-def test_config_min_stock_threshold_custom(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SHOP_MIN_STOCK_THRESHOLD", "15")
-    assert AppConfig.get_min_stock_threshold() == 15
+def test_checkout_with_magic_mock_audit_session_context_manager(
+    product_repository: InMemoryProductRepository
+) -> None:
+    # Arrange: MagicMock для симуляції контекстного менеджера аудиту з методами __enter__ / __exit__
+    audit_mock = MagicMock(spec=AuditSession)
+    audit_mock.__enter__.return_value = audit_mock
+
+    payment_mock = Mock(spec=PaymentGateway)
+    payment_mock.process_payment.return_value = "TXN-AUDIT-77"
+    notifier_mock = Mock(spec=Notifier)
+
+    service = CheckoutService(
+        repository=product_repository,
+        payment_gateway=payment_mock,
+        notifier=notifier_mock,
+        audit_session=audit_mock,
+    )
+
+    # Act
+    service.checkout("auditor@company.com", [2])
+
+    # Assert: Перевіряємо вхід/вихід із контекстного менеджера та виклики запису аудиту
+    assert audit_mock.__enter__.call_count == 2
+    assert audit_mock.__exit__.call_count == 2
+    audit_mock.record_step.assert_any_call("start_checkout")
+    audit_mock.record_step.assert_any_call("payment_completed")
 
 
-def test_config_min_stock_threshold_defaults_and_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("SHOP_MIN_STOCK_THRESHOLD", raising=False)
-    assert AppConfig.get_min_stock_threshold() == 5
+def test_repository_len_dunder_via_magic_mock() -> None:
+    # Arrange: MagicMock автоматично реалізує dunder-методи типу __len__
+    repo_mock = MagicMock(spec=InMemoryProductRepository)
+    repo_mock.__len__.return_value = 42
 
-    monkeypatch.setenv("SHOP_MIN_STOCK_THRESHOLD", "invalid_number")
-    assert AppConfig.get_min_stock_threshold() == 5
+    # Assert
+    assert len(repo_mock) == 42
 
 
-# --- Async External Provider Tests with AsyncMock ---
+# --- Тести з AsyncMock (Асинхронний провайдер валют) ---
 
 def test_async_currency_converter_success(laptop_product: Product) -> None:
-    async def _run() -> None:
+    async def _scenario() -> None:
         provider_mock = AsyncMock(spec=ExternalPriceProvider)
-        provider_mock.get_exchange_rate.return_value = 0.024  # 1 UAH = ~0.024 EUR
+        provider_mock.get_exchange_rate.return_value = 0.024  # 1 UAH = 0.024 EUR
 
         converter = AsyncCurrencyConverter(provider_mock)
-        # 32000 UAH * 0.024 = 768.0 EUR
         converted = await converter.convert_product_price(laptop_product, "EUR")
 
-        assert converted.amount == pytest.approx(768.0)
+        # 65000 * 0.024 = 1560.0 EUR
+        assert converted.amount == pytest.approx(1560.0)
         assert converted.currency == "EUR"
         provider_mock.get_exchange_rate.assert_awaited_once_with("EUR")
 
-    asyncio.run(_run())
+    asyncio.run(_scenario())
 
 
-def test_async_currency_converter_provider_error(laptop_product: Product) -> None:
-    async def _run() -> None:
+def test_async_currency_converter_provider_exception(laptop_product: Product) -> None:
+    async def _scenario() -> None:
         provider_mock = AsyncMock(spec=ExternalPriceProvider)
-        provider_mock.get_exchange_rate.side_effect = ProviderUnavailableError("API Gateway Timeout")
+        provider_mock.get_exchange_rate.side_effect = ProviderUnavailableError("HTTP 504 Gateway Timeout")
 
         converter = AsyncCurrencyConverter(provider_mock)
 
         with pytest.raises(ProviderUnavailableError, match="Gateway Timeout"):
             await converter.convert_product_price(laptop_product, "USD")
 
-    asyncio.run(_run())
+    asyncio.run(_scenario())
 
 
-# --- CSV Import Error Path & Exception Chaining ---
+# --- Тести з monkeypatch (Environment Variables, Attributes, Functions) ---
 
-def test_csv_import_malformed_record_causes_data_import_error(tmp_path: Path) -> None:
-    broken_csv = tmp_path / "broken_products.csv"
-    broken_csv.write_text(
+def test_monkeypatch_environment_variables(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 1. Підміна через setenv
+    monkeypatch.setenv("SHOP_MIN_STOCK_THRESHOLD", "12")
+    monkeypatch.setenv("SHOP_ENV", "staging")
+    assert AppConfig.get_min_stock_threshold() == 12
+    assert AppConfig.get_environment() == "staging"
+
+    # 2. Перевірка fallback при видаленні через delenv
+    monkeypatch.delenv("SHOP_MIN_STOCK_THRESHOLD", raising=False)
+    assert AppConfig.get_min_stock_threshold() == 5
+
+    # 3. Перевірка невалідного значення
+    monkeypatch.setenv("SHOP_MIN_STOCK_THRESHOLD", "not-a-number")
+    assert AppConfig.get_min_stock_threshold() == 5
+
+
+def test_monkeypatch_attributes_and_functions(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 1. Підміна атрибута класу через monkeypatch.setattr
+    monkeypatch.setattr(AppConfig, "DEFAULT_CURRENCY", "PLN")
+    assert AppConfig.DEFAULT_CURRENCY == "PLN"
+
+    # 2. Підміна функції через monkeypatch.setattr
+    def fake_order_id(prefix: str = "ORD") -> str:
+        return f"{prefix}-MOCKED-ID-999"
+
+    current_module = sys.modules[__name__]
+    monkeypatch.setattr(current_module, "generate_order_id", fake_order_id)
+
+    assert generate_order_id("ORDER") == "ORDER-MOCKED-ID-999"
+
+
+# --- Тести помилок CSV та Exception Chaining ---
+
+def test_csv_import_missing_headers_raises_data_import_error(tmp_path: Path) -> None:
+    invalid_csv = tmp_path / "missing_cols.csv"
+    invalid_csv.write_text("product_id,name,price\n1,Short Data,100\n", encoding="utf-8")
+
+    with pytest.raises(DataImportError, match="не містить обов'язкових заголовків"):
+        ProductIO.import_from_csv(invalid_csv)
+
+
+def test_csv_import_malformed_record_exception_chaining(tmp_path: Path) -> None:
+    corrupted_csv = tmp_path / "corrupted.csv"
+    corrupted_csv.write_text(
         "product_id,name,category,price,currency,quantity\n"
-        "1,Valid Item,Books,100.0,UAH,10\n"
-        "2,Broken Price,Books,NOT_A_NUMBER,UAH,5\n",
+        "10,Good Book,Books,120.0,UAH,5\n"
+        "11,Bad Price,Books,INVALID_FLOAT,UAH,3\n",
         encoding="utf-8"
     )
 
     with pytest.raises(DataImportError) as exc_info:
-        ProductIO.import_from_csv(broken_csv)
+        ProductIO.import_from_csv(corrupted_csv)
 
-    assert "Помилка в рядку 3" in str(exc_info.value)
-    # Перевірка ланцюжка винятків (exception chaining via __cause__)
+    assert "Помилка даних у рядку 3" in str(exc_info.value)
+    # Перевірка зв'язку винятків (exception chaining через __cause__)
     assert isinstance(exc_info.value.__cause__, ValueError)
 
 
 # =====================================================================
-# 8. INTEGRATION TESTS (3 required)
+# 8. INTEGRATION TESTS (ІНТЕГРАЦІЙНІ ТЕСТИ)
 # =====================================================================
 
 @pytest.mark.integration
-def test_integration_csv_import_to_catalog_calculation(tmp_path: Path) -> None:
+def test_integration_csv_import_to_repository_and_catalog(tmp_path: Path) -> None:
     """
-    Інтеграційний тест 1: Файлова система CSV -> Парсер -> Репозиторій -> Каталог -> Розрахунок залишків.
+    Інтеграційний тест 1: Файлова система CSV -> Парсинг ProductIO ->
+    Наповнення репозиторію -> Сервіс каталогу -> Розрахунок загальної вартості складу.
     """
-    # 1. Arrange: Створення тимчасового валідного CSV-файлу
-    csv_file = tmp_path / "imported_stock.csv"
+    csv_file = tmp_path / "batch_products.csv"
     csv_file.write_text(
         "product_id,name,category,price,currency,quantity\n"
-        "101,Office Chair,Home,4200.00,UAH,5\n"
-        "102,LED Lamp,Home,800.50,UAH,10\n"
-        "103,Bluetooth Speaker,Electronics,1500.00,UAH,4\n",
+        "501,Smart TV 55,Electronics,18000.0,UAH,2\n"
+        "502,Soundbar,Electronics,4500.0,UAH,4\n"
+        "503,Coffee Beans 1kg,Food,600.0,UAH,10\n",
         encoding="utf-8"
     )
 
-    # 2. Act: Імпорт та додавання до каталогу
-    imported_products = ProductIO.import_from_csv(csv_file)
+    # 1. Імпорт
+    imported_list = ProductIO.import_from_csv(csv_file)
+    assert len(imported_list) == 3
+
+    # 2. Наповнення каталогу
     repo = InMemoryProductRepository()
     catalog = CatalogService(repo)
-    for p in imported_products:
+    for p in imported_list:
         catalog.add_product(p)
 
-    # 3. Assert: Перевірка стану каталогу та взаємодії компонентів
-    assert len(imported_products) == 3
-    # 4200*5 (21000) + 800.5*10 (8005) + 1500*4 (6000) = 35005.00
-    total_value = catalog.calculate_total_inventory_value()
-    assert total_value.amount == pytest.approx(35005.00)
-    assert total_value.currency == "UAH"
+    # 3. Аналітика складу: 18000*2 (36000) + 4500*4 (18000) + 600*10 (6000) = 60000.0 UAH
+    total_val = catalog.calculate_total_inventory_value()
+    assert total_val.amount == pytest.approx(60000.0)
+    assert total_val.currency == "UAH"
+
+    # Перевірка найдорожчого товару
+    most_exp = catalog.get_most_expensive_product()
+    assert most_exp is not None
+    assert most_exp.name == "Smart TV 55"
 
 
 @pytest.mark.integration
-def test_integration_catalog_processing_and_json_export(tmp_path: Path, sample_inventory: List[Product]) -> None:
+def test_integration_catalog_filter_to_json_export_and_file_verification(
+    tmp_path: Path, catalog_service: CatalogService
+) -> None:
     """
-    Інтеграційний тест 2: Сховище -> Каталог -> Фільтрація low stock -> Експорт у JSON файл -> Читання з диска.
+    Інтеграційний тест 2: Сховище -> Каталог -> Фільтрація дефіцитних залишків ->
+    Експорт у JSON -> Зчитування та валідація вмісту на файловій системі.
     """
-    # 1. Arrange
-    repo = InMemoryProductRepository()
-    for prod in sample_inventory:
-        repo.add(prod)
-    catalog = CatalogService(repo)
+    # 1. Фільтруємо позиції з критичним залишком <= 2
+    low_stock = catalog_service.get_low_stock_products(threshold=2)
+    assert len(low_stock) == 2
 
-    # 2. Act: Отримання товарів із залишком <= 5 та експорт у тимчасовий JSON
-    low_stock = catalog.get_low_stock_products(threshold=5)
-    export_path = tmp_path / "low_stock_report.json"
-    ProductIO.export_to_json(low_stock, export_path)
+    # 2. Експортуємо у тимчасовий JSON
+    target_json = tmp_path / "low_stock_audit.json"
+    ProductIO.export_to_json(low_stock, target_json)
 
-    # 3. Assert: Перевірка реального створення та структури збереженого файлу
-    assert export_path.exists()
-    raw_content = export_path.read_text(encoding="utf-8")
-    loaded_data = json.loads(raw_content)
+    # 3. Перевіряємо створення та коректність серіалізованого вмісту
+    assert target_json.exists()
+    content = json.loads(target_json.read_text(encoding="utf-8"))
+    assert isinstance(content, list)
+    assert len(content) == 2
 
-    assert isinstance(loaded_data, list)
-    # З 5 товарів вибірки залишком <= 5 мають: ThinkPad (3), CleanArch (5), Hoodie (2) -> 3 товари
-    assert len(loaded_data) == 3
-    exported_ids = [item["product_id"] for item in loaded_data]
-    assert set(exported_ids) == {1, 4, 5}
+    exported_names = {entry["name"] for entry in content}
+    assert exported_names == {"Refactoring Guide", "Developer Hoodie"}
+    for entry in content:
+        assert "total_stock_value" in entry
+        assert entry["quantity"] <= 2
 
 
 @pytest.mark.integration
-def test_integration_full_import_discount_async_rate_and_export_flow(tmp_path: Path) -> None:
+def test_integration_full_ecommerce_data_pipeline(tmp_path: Path) -> None:
     """
-    Інтеграційний тест 3: Наскрізний ланцюг: CSV Import -> Catalog Processing ->
-    Discount Calculation -> Async Currency Conversion -> JSON Export.
+    Інтеграційний тест 3: Наскрізний потік:
+    Імпорт CSV -> Застосування знижки до цін -> Асинхронний перерахунок валюти -> Експорт у JSON.
     """
-    # 1. Arrange: Створюємо вхідний CSV
-    csv_file = tmp_path / "incoming_goods.csv"
-    csv_file.write_text(
+    input_csv = tmp_path / "incoming_goods.csv"
+    input_csv.write_text(
         "product_id,name,category,price,currency,quantity\n"
-        "201,Wireless Headphones,Electronics,2500.0,UAH,10\n"
-        "202,Smart Watch,Electronics,5000.0,UAH,6\n",
+        "701,Gaming Mouse,Electronics,2000.0,UAH,5\n"
+        "702,Mechanical Numpad,Electronics,1000.0,UAH,8\n",
         encoding="utf-8"
     )
 
-    # Mock зовнішнього асинхронного джерела валюти
-    rate_provider_mock = AsyncMock(spec=ExternalPriceProvider)
-    rate_provider_mock.get_exchange_rate.return_value = 0.025  # 1 UAH = 0.025 USD
-    converter = AsyncCurrencyConverter(rate_provider_mock)
+    # Mock асинхронного джерела котирувань
+    rate_mock = AsyncMock(spec=ExternalPriceProvider)
+    rate_mock.get_exchange_rate.return_value = 0.025  # 1 UAH = 0.025 USD
+    converter = AsyncCurrencyConverter(rate_mock)
+    discount = PercentageDiscount(20.0)  # 20% знижка
 
-    async def _pipeline() -> None:
-        # 2. Act: Імпорт
-        products = ProductIO.import_from_csv(csv_file)
-        repo = InMemoryProductRepository()
-        catalog = CatalogService(repo)
-        for prod in products:
-            catalog.add_product(prod)
+    async def _run_pipeline() -> None:
+        # Читання
+        items = ProductIO.import_from_csv(input_csv)
+        processed: List[Product] = []
 
-        # Конвертуємо ціни в USD асинхронно
-        converted_products: List[Product] = []
-        for prod in catalog.repository.get_all():
-            new_price = await converter.convert_product_price(prod, "USD")
-            converted_prod = Product(
-                product_id=prod.product_id,
-                name=prod.name,
-                category=prod.category,
-                price=new_price,
-                quantity=prod.quantity,
+        for p in items:
+            discounted_price = discount.apply(p.price)
+            # Конвертація у валюту USD
+            usd_price = await converter.convert_product_price(
+                Product(p.product_id, p.name, p.category, discounted_price, p.quantity),
+                target_currency="USD"
             )
-            converted_products.append(converted_prod)
+            processed.append(Product(p.product_id, p.name, p.category, usd_price, p.quantity))
 
-        # Експорт у фінальний звіт
-        output_json = tmp_path / "international_catalog.json"
-        ProductIO.export_to_json(converted_products, output_json)
+        output_file = tmp_path / "processed_usd_catalog.json"
+        ProductIO.export_to_json(processed, output_file)
 
-        # 3. Assert
-        assert output_json.exists()
-        data = json.loads(output_json.read_text(encoding="utf-8"))
-        assert len(data) == 2
-        # 2500 * 0.025 = 62.5 USD
-        assert data[0]["price"] == pytest.approx(62.5)
-        assert data[0]["currency"] == "USD"
-        # 5000 * 0.025 = 125.0 USD
-        assert data[1]["price"] == pytest.approx(125.0)
-        assert data[1]["currency"] == "USD"
+        # Перевірка результату на диску
+        assert output_file.exists()
+        saved = json.loads(output_file.read_text(encoding="utf-8"))
+        assert len(saved) == 2
+        # Товар 1: 2000 грн - 20% = 1600 грн * 0.025 = 40.0 USD
+        assert saved[0]["price"] == pytest.approx(40.0)
+        assert saved[0]["currency"] == "USD"
+        # Товар 2: 1000 грн - 20% = 800 грн * 0.025 = 20.0 USD
+        assert saved[1]["price"] == pytest.approx(20.0)
+        assert saved[1]["currency"] == "USD"
 
-    asyncio.run(_pipeline())
+    asyncio.run(_run_pipeline())
 
 
 # =====================================================================
-# 9. DEMONSTRATION & CLI ENTRYPOINT
+# 9. ГОЛОВНИЙ ДЕМОНСТРАЦІЙНИЙ СКРИПТ ТА ЗАПУСК PYTEST
 # =====================================================================
 
 def main() -> None:
-    """Точка входу для демонстрації роботи та автоматичного запуску pytest."""
+    """Точка входу для перевірки та запуску всього набору тестів із розрахунком coverage."""
     print("=" * 80)
-    print("  ЛАБОРАТОРНА РОБОТА №6. ТЕСТУВАННЯ PYTHON-ПРОГРАМ (ВАРІАНТ №3: ІНТЕРНЕТ-МАГАЗИН)")
+    print("  ЛАБОРАТОРНА РОБОТА №6. ТЕСТУВАННЯ PYTHON (ВАРІАНТ №3: ІНТЕРНЕТ-МАГАЗИН)")
     print("=" * 80)
-    print("Виконання демонстраційного сценарію доменної логіки...")
+    print("Демонстрація доменної моделі...")
 
-    # Базова демонстрація бізнес-логіки
     repo = InMemoryProductRepository()
-    catalog = CatalogService(repo)
-    p1 = Product(1, "Dell UltraSharp Monitor", ProductCategory.ELECTRONICS, Money(14500.0), 4)
-    p2 = Product(2, "Ergonomic Keyboard", ProductCategory.ELECTRONICS, Money(2800.0), 15)
-    catalog.add_product(p1)
-    catalog.add_product(p2)
+    cat = CatalogService(repo)
+    p1 = Product(101, "Dell UltraSharp Monitor", ProductCategory.ELECTRONICS, Money(14500.0), 3)
+    p2 = Product(102, "Ergonomic Mechanical Keyboard", ProductCategory.ELECTRONICS, Money(3200.0), 10)
+    cat.add_product(p1)
+    cat.add_product(p2)
 
-    print(f"Додано товарів до каталогу: {len(catalog.repository.get_all())}")
-    print(f"Загальна вартість складу: {catalog.calculate_total_inventory_value().amount} UAH")
-    print(f"Найдорожчий товар: {catalog.get_most_expensive_product().name}")
+    print(f"Кількість товарів у каталозі: {len(cat.repository.get_all())}")
+    print(f"Балансова вартість залишків: {cat.calculate_total_inventory_value().amount} UAH")
+    print(f"Найдорожчий товар: {cat.get_most_expensive_product().name}")
     print("-" * 80)
-    print("Запуск автоматизованого тест-сьюту за допомогою pytest...")
+    print("Запуск тестів через pytest runner...")
     print("-" * 80)
 
-    # Програмний запуск pytest для поточного файлу з детальним звітом
     pytest_args = [
         __file__,
         "-v",
         "--tb=short",
-        "-ra",
     ]
 
     try:
         import pytest_cov  # noqa: F401
-        pytest_args.extend(["--cov", "--cov-report=term-missing"])
+        pytest_args.extend(["--cov", "--cov-branch", "--cov-report=term-missing"])
     except ImportError:
-        pass
+        print("[Увага] Модуль pytest-cov не встановлено. Для звіту про покриття виконайте: pip install pytest-cov")
 
-    exit_code = pytest.main(pytest_args)
-    if exit_code == 0:
-        print("\nВсі автоматизовані тести (Unit & Integration) успішно виконані!")
+    code = pytest.main(pytest_args)
+    if code == 0:
+        print("\n[УСПІХ] Усі unit та integration тести виконані успішно!")
     else:
-        print(f"\nТестування завершилося з кодом: {exit_code}")
-    sys.exit(exit_code)
+        print(f"\n[ПОМИЛКА] Тестування завершилося з кодом: {code}")
+    sys.exit(code)
 
 
 if __name__ == "__main__":
