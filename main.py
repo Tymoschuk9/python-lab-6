@@ -1,32 +1,12 @@
 from __future__ import annotations
-import os
 import sys
-
-try:
-    from .value_objects import Money
-    from .models import Product, Cart, CartItem
-    from .services import (
-        Catalog, PercentageDiscount, CheckoutService, PaymentError,
-        get_payment_mode, get_min_stock
-    )
-    from .exporters import export_order, export_products_to_json, import_products_from_csv
-except (ImportError, ValueError):
-    try:
-        from shop.value_objects import Money
-        from shop.models import Product, Cart, CartItem
-        from shop.services import (
-            Catalog, PercentageDiscount, CheckoutService, PaymentError,
-            get_payment_mode, get_min_stock
-        )
-        from shop.exporters import export_order, export_products_to_json, import_products_from_csv
-    except (ImportError, ValueError):
-        from value_objects import Money
-        from models import Product, Cart, CartItem
-        from services import (
-            Catalog, PercentageDiscount, CheckoutService, PaymentError,
-            get_payment_mode, get_min_stock
-        )
-        from exporters import export_order, export_products_to_json, import_products_from_csv
+from shop.value_objects import Money
+from shop.models import Product, Cart
+from shop.services import (
+    Catalog, PercentageDiscount, CheckoutService, PaymentError,
+    get_payment_mode, get_min_stock
+)
+from shop.exporters import export_order, export_products_to_json, import_products_from_csv
 
 def main() -> None:
     print("=" * 60)
@@ -52,6 +32,8 @@ def main() -> None:
     discount = PercentageDiscount(10)
     discounted_total = discount.apply(cart.total)
     print(f"Сума зі знижкою 10%: {discounted_total.amount:.2f} {discounted_total.currency}")
+    print(f"Режим оплати: {get_payment_mode()}")
+    print(f"Мінімальний запас: {get_min_stock()}")
     print("=" * 60)
 
 if __name__ == "__main__":
