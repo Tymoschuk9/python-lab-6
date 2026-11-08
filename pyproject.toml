@@ -24,7 +24,7 @@ markers = [
 
 [tool.coverage.run]
 branch = true
-source = ["shop", "lab_06"]
+source = ["shop"]
 
 [tool.coverage.report]
 show_missing = true
