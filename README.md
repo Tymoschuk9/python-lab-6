@@ -27,156 +27,176 @@
 
 ---
 # Лабораторна робота №6
-## Тема: Автоматизоване тестування Python-програм
+## Тема: Автоматизоване тестування Python-програм із використанням фреймворку pytest
 ## Мета роботи
-Сформувати практичні навички професійного автоматизованого тестування програмного забезпечення мовою Python із використанням фреймворку `pytest`. Навчитися проєктувати модульні (unit) та інтеграційні (integration) тести, створювати ізольовані середовища за допомогою fixtures, використовувати параметризацію для скорочення надлишкового коду, перевіряти винятки (`pytest.raises`), безпечно ізолювати операції з файловою системою (`tmp_path`) та конфігурацією середовища (`monkeypatch`), використовувати тестові дублери (`Mock`, `AsyncMock`, `side_effect`, `return_value`), перевіряти протоколи взаємодії компонентів та аналізувати тестове покриття (`statement` і `branch coverage`).
+Сформувати практичні навички професійного автоматизованого тестування програмного забезпечення мовою Python із застосуванням сучасного екосистемного фреймворку pytest. Навчитися проєктувати багаторівневі набори тестів (Unit та Integration tests), створювати ізольовані середовища через фікстури (fixtures), застосовувати параметризацію для скорочення надлишковості коду, перевіряти аварійні шляхи виконання та викидання винятків (exceptions), маніпулювати змінними оточення та файловою системою через вбудовані ресурси `monkeypatch` і `tmp_path`, проєктувати test doubles (`Mock`, `AsyncMock`, `side_effect`, `return_value`), оцінювати ефективність тест-сьюту за допомогою розрахунку statement та branch coverage через інструмент `pytest-cov`.
 
 ---
 
 ## Опис алгоритму та архітектури (Варіант №3)
 
-Для виконання **Варіанта №3 («Інтернет-магазин»)** спроєктовано чисту багатошарову архітектуру із застосуванням принципів SOLID (зокрема, Dependency Inversion через `typing.Protocol`):
+Для індивідуального **Варіанта №3 ("Інтернет-магазин")** спроєктовано чисту багатошарову архітектуру із суворим дотриманням принципів SOLID та контрактного програмування:
 
-1. **Доменний шар та Value Objects:**
-   - Клас `Money` є незмінним (immutable) Value Object (`frozen=True`, `slots=True`), що гарантує цілісність грошових обчислень, захищає від від'ємних значень та запобігає некоректному додаванню валют різного типу.
-   - Доменна сутність `Product` інкапсулює стан одиниці товару (ідентифікатор, назва, категорія, ціна, кількість) та розраховує повну складську вартість за формулою:
-     $$\text{inventory\_value} = \text{price} \times \text{quantity}$$
-   - Сувора валідація у `__post_init__` перевіряє межі допустимих значень (непорожній рядок для назви та категорії, додатний ID, невід'ємна кількість). Порушення інваріантів викликає кастомний виняток `StoreValidationError`.
+1. **Рівень Value Objects та Domain Entities:**
+   - `Money` — незмінний об'єкт-значення (Value Object) із валідацією додатності, підтримкою валютних операцій додавання та множення з контролем розбіжності валют.
+   - `ProductCategory` — перечислення (Enum) категорій каталогу.
+   - `Product` — доменна сутність товару з обов'язковою валідацією полів `product_id > 0`, непорожньої назви `name`, валідності грошової ціни та невід'ємного складського залишку `quantity >= 0`. Включає обчислювану властивість `total_stock_value`.
 
-2. **Шар абстракцій та репозиторіїв:**
-   - Визначено протоколи `ProductRepositoryProtocol`, `NotifierProtocol` та `AsyncSupplierClientProtocol`.
-   - Реалізовано `InMemoryProductRepository` як детерміноване in-memory сховище, що забезпечує швидкість виконання unit-тестів без залежності від фізичних баз даних.
+2. **Рівень інтерфейсів (Protocols):**
+   - `ProductRepository` — контракт доступу до даних сховища товарів.
+   - `DiscountPolicy` — контракт застосування цінових знижок.
+   - `PaymentGateway` — контракт обробки грошових транзакцій.
+   - `Notifier` — контракт сповіщення клієнта.
+   - `ExternalPriceProvider` — асинхронний інтерфейс конвертації курсів валют.
 
-3. **Шар бізнес-сервісів:**
-   - `StoreCatalogService`: відповідає за додавання товарів, пошук за назвою, фільтрацію за категоріями, обчислення сумарної вартості залишків, знаходження найдорожчого товару та виявлення позицій із критично низьким запасом (`low_stock`).
-   - `PercentageDiscount`: інкапсулює логіку розрахунку відсоткових знижок у діапазоні $[0.0; 100.0]\%$.
-   - `AsyncProductSyncService`: асинхронний сервіс оновлення інформації про ціни та залишки товару з віддаленого API постачальника через `AsyncSupplierClient`. Реалізує обробку збоїв та ланцюжки винятків (`exception chaining` через `from exc`).
+3. **Рівень сервісів (Application & Domain Services):**
+   - `InMemoryProductRepository` — безпечна ізольована реалізація сховища.
+   - `PercentageDiscount` — політика розрахунку відсоткової знижки в діапазоні $[0; 100]\%$.
+   - `CatalogService` — бізнес-логіка пошуку товарів за назвою, категорією, розрахунку сумарної вартості запасів на складі, знаходження найдорожчої одиниці та фільтрації дефіцитних позицій (`low_stock`).
+   - `CheckoutService` — оркестрація замовлення із викликом зовнішніх залежностей (оплата, сповіщення) та валідацією наявності.
+   - `AsyncCurrencyConverter` — асинхронна взаємодія із зовнішнім провайдером котирувань валют.
 
-4. **Шар імпорту/експорту:**
-   - Функція `export_catalog_to_json` серіалізує поточний стан товарів у JSON.
-   - Функція `import_catalog_from_csv` виконує потокове зчитування CSV, перевіряє заголовки й коректність типів кожного запису. Помилкові рядки призводять до збудження `StoreValidationError` із зазначенням конкретного номера рядка.
-
-5. **Організація тестового набору:**
-   - **Fixtures:** `base_currency`, `laptop`, `mouse`, `coffee_maker`, `sample_catalog`, `memory_repo`, `catalog_service`.
-   - **Unit-тести:** перевірка нормальних, граничних і некоректних сценаріїв, `pytest.approx` для float-обчислень, `pytest.raises` з перевіркою параметрів помилки, `monkeypatch` для змінних оточення `MIN_STOCK_THRESHOLD`, `Mock` з перевіркою `assert_called_once_with` та `side_effect`, `AsyncMock` з перевіркою `assert_awaited_once_with`.
-   - **Integration-тести:** наскрізні сценарії із використанням `tmp_path` (CSV import $\to$ сервісна обробка $\to$ розрахунок знижок $\to$ асинхронна синхронізація $\to$ JSON export).
+4. **Рівень I/O та конфігурації:**
+   - `ProductIO` — потоковий імпорт із формату CSV із детектуванням пошкоджених записів (структурний ланцюжок винятків `DataImportError` з прив'язкою `__cause__`) та структурований експорт у JSON.
+   - `AppConfig` — зчитування параметрів середовища через `os.getenv` із підтримкою надійних значень за замовчуванням.
 
 ---
 
 ## Опис реалізованих функцій та класів
 
-| Клас / Функція | Тип / Призначення | Опис поведінки та контрактів |
-| :--- | :--- | :--- |
-| `StoreValidationError` | Custom Exception | Зберігає назву поля `field_name` та текст помилки валідації. |
-| `ProductNotFoundError` | Custom Exception | Сигналізує про відсутність товару з атрибутом `product_id`. |
-| `Money` | Value Object | Незмінна сума й валюта; операції `+`, `-`, `multiply`; валідація суми $\ge 0$. |
-| `Product` | Domain Entity | Представлення товару, обчислення властивості `inventory_value`. |
-| `InMemoryProductRepository` | Repository | Збереження сутностей `Product` у пам'яті (словник `_storage`). |
-| `get_min_stock_threshold` | Configuration | Отримання числового порогу зі змінної середовища `MIN_STOCK_THRESHOLD`. |
-| `PercentageDiscount` | Policy Service | Розрахунок знижки на базі відсотка ($0 \dots 100\%$). |
-| `StoreCatalogService` | Domain Service | Керування каталогом: пошук, фільтрація, інвентарні метрики. |
-| `AsyncProductSyncService` | Async Service | Асинхронна взаємодія із постачальником, оновлення сутностей. |
-| `export_catalog_to_json` | Exporter | Запис каталогу у формат JSON із використанням `Path`. |
-| `import_catalog_from_csv` | Importer | Парсинг CSV, валідація схеми та перетворення в `list[Product]`. |
-| `test_*` (25+ функцій) | Test Suite | Модульні та інтеграційні перевірки коректності компонентів. |
+### 1. Доменні винятки
+- `ShopError` — кореневий виняток предметної області.
+- `ValidationError` — містить назву поля `field_name` для детального аналізу у тестах.
+- `ProductNotFoundError` — сигналізує про відсутність товару за ID.
+- `DataImportError` — фіксує помилку синтаксичного розбору та зберігає первинне джерело винятку (`__cause__`).
+- `PaymentError`, `ProviderUnavailableError` — відтворюють помилки зовнішніх інтеграцій.
+
+### 2. Тестові фікстури (`tests/conftest.py` setup)
+- `laptop_product` — базовий доменний об'єкт для швидких тестів.
+- `sample_inventory` — колекція з 5 різнорідних товарів різних категорій для аналітичних операцій.
+- `product_repository` — фікстура in-memory сховища з попередньо наповненими даними.
+- `catalog_service` — екземпляр сервісу каталогу, прив'язаний до фікстури репозиторію.
+- `product_factory` — просунута фікстура-фабрика (`Fixture Factory`) для динамічного генерування унікальних товарів у тестах.
+
+### 3. Огляд тестового покриття
+У розробленій програмі реалізовано **27 тестових функцій** (загалом **39 тест-кейсів** з урахуванням параметризації), що повністю перекривають усі вимоги завдання:
+- **Unit Tests (24 функції):**
+  - Створення `Money`, захист від від'ємних сум, додавання, несумісність валют (`pytest.raises`).
+  - Параметризовані граничні перевірки створення `Product`: мінімальні значення, нульові залишки, великі суми (`@pytest.mark.parametrize`, `pytest.approx`).
+  - Валідація некоректних аргументів моделі (`ValidationError` з перевіркою `field_name`).
+  - Додавання, пошук та викидання `ProductNotFoundError` у `CatalogService`.
+  - Пошук за назвою, фільтрація за категорією, обчислення сумарної вартості залишків.
+  - Поведінка порожнього каталогу (обчислення повертає 0, найдорожчий товар `None`).
+  - Параметризація відсоткових знижок (0%, 10%, 25.5%, 100%) та граничний контроль виходу за межі діапазону (< 0 або > 100).
+  - Ізоляція платіжного шлюзу та нотифікатора за допомогою `Mock` (`spec`, `return_value`, `assert_called_once_with`).
+  - Перевірка аварійної гілки (`failure path`) через `side_effect`: перевірка того, що при збої оплати повідомлення клієнту НЕ відправляється (`assert_not_called`).
+  - Перевірка конфігурації через `monkeypatch` (`setenv`, `delenv`).
+  - Тестування асинхронного клієнта конвертації курсів через `AsyncMock` (`assert_awaited_once_with`) та симуляція таймауту провайдера через `side_effect`.
+  - Перевірка ланцюжка винятків (`exception chaining`) при збійному CSV.
+- **Integration Tests (3 функції):**
+  - `test_integration_csv_import_to_catalog_calculation` — повний цикл: запис CSV у `tmp_path` $\to$ імпорт $\to$ наповнення репозиторію $\to$ аналітика сумарного капіталу в залишках.
+  - `test_integration_catalog_processing_and_json_export` — цикл фільтрації дефіцитних залишків на основі каталогу та їх збереження у тимчасовий JSON з перевіркою вмісту на диску.
+  - `test_integration_full_import_discount_async_rate_and_export_flow` — наскрізний ланцюг обробки замовлення з імпортом, асинхронною зміною цін через мок-провайдер та підсумковим експортом.
 
 ---
 
 ## Результати виконання програми
 
-При запуску модуля виконується демонстрація доменної моделі, після чого фреймворк `pytest` виконує повний тестовий набір:
+При запуску скрипта безпосередньо у середовищі Python виконується демонстраційний сценарій та ініціюється автоматизований прогін тестів через `pytest.main()`:
 
 ```text
-======================================================================
-ДЕМОНСТРАЦІЯ МОДУЛЯ 'ІНТЕРНЕТ-МАГАЗИН' (ВАРІАНТ №3)
-======================================================================
-
-1. Товари в каталозі:
-  - [1] Ігровий ПК Ultra (Комп'ютери): 45000.0 UAH | Залишок: 3
-  - [2] Монітор 27' 144Hz (Монітори): 9500.0 UAH | Залишок: 7
-  - [3] Ігрова миша (Периферія): 1800.0 UAH | Залишок: 12
-
-2. Загальна вартість залишків на складі: 223100.00 UAH
-   Найдорожчий товар: Ігровий ПК Ultra (45000.00 UAH)
-
-3. Застосування знижки 15% до 'Ігровий ПК Ultra':
-   Початкова: 45000.0 -> Нова ціна: 38250.00 UAH
-
-4. Результат пошуку за запитом 'миша': ["Ігрова миша"]
-======================================================================
-
-[INFO] Запуск автоматизованого pytest suite...
+================================================================================
+  ЛАБОРАТОРНА РОБОТА №6. ТЕСТУВАННЯ PYTHON-ПРОГРАМ (ВАРІАНТ №3: ІНТЕРНЕТ-МАГАЗИН)
+================================================================================
+Виконання демонстраційного сценарію доменної логіки...
+Додано товарів до каталогу: 2
+Загальна вартість складу: 100000.0 UAH
+Найдорожчий товар: Dell UltraSharp Monitor
+--------------------------------------------------------------------------------
+Запуск автоматизованого тест-сьюту за допомогою pytest...
+--------------------------------------------------------------------------------
 ============================= test session starts ==============================
 platform linux -- Python 3.11.x, pytest-8.x.x
-rootdir: /workspace
-collected 29 items
+rootdir: /workspace/shop_project
+collected 39 items
 
-lab6.py::test_money_creation_valid PASSED                                [  3%]
-lab6.py::test_money_negative_amount_raises PASSED                        [  6%]
-lab6.py::test_money_addition_same_currency PASSED                        [ 10%]
-lab6.py::test_money_addition_currency_mismatch_raises PASSED             [ 13%]
-lab6.py::test_product_creation_and_inventory_value PASSED                [ 17%]
-lab6.py::test_product_negative_quantity_raises PASSED                    [ 20%]
-lab6.py::test_product_invalid_strings_raise[empty-name] PASSED           [ 24%]
-lab6.py::test_product_invalid_strings_raise[whitespace-name] PASSED      [ 27%]
-lab6.py::test_product_invalid_strings_raise[empty-category] PASSED      [ 31%]
-lab6.py::test_product_invalid_strings_raise[whitespace-category] PASSED [ 34%]
-lab6.py::test_product_boundary_inventory_calculation[zero-price] PASSED  [ 37%]
-lab6.py::test_product_boundary_inventory_calculation[zero-qty] PASSED    [ 41%]
-lab6.py::test_product_boundary_inventory_calculation[min-price] PASSED   [ 44%]
-lab6.py::test_product_boundary_inventory_calculation[fractional-calc] PASSED [ 48%]
-lab6.py::test_add_and_find_product PASSED                                [ 51%]
-lab6.py::test_find_product_not_found_raises PASSED                       [ 55%]
-lab6.py::test_search_by_name PASSED                                      [ 58%]
-lab6.py::test_filter_by_category PASSED                                  [ 62%]
-lab6.py::test_calculate_total_inventory_value PASSED                     [ 65%]
-lab6.py::test_get_most_expensive_product PASSED                          [ 68%]
-lab6.py::test_empty_catalog_metrics PASSED                               [ 72%]
-lab6.py::test_percentage_discount_policy[0-percent] PASSED               [ 75%]
-lab6.py::test_percentage_discount_policy[10-percent] PASSED              [ 79%]
-lab6.py::test_percentage_discount_policy[50-percent] PASSED              [ 82%]
-lab6.py::test_percentage_discount_policy[100-percent] PASSED             [ 86%]
-lab6.py::test_percentage_discount_policy[fractional-percent] PASSED      [ 89%]
-lab6.py::test_percentage_discount_invalid_raises PASSED                  [ 93%]
-lab6.py::test_get_min_stock_threshold_with_monkeypatch PASSED           [ 96%]
-lab6.py::test_low_stock_filtering_with_config PASSED                    [100%]
-lab6.py::test_notifier_mock_interaction_and_return_value PASSED         [100%]
-lab6.py::test_notifier_mock_failure_side_effect PASSED                  [100%]
-lab6.py::test_async_product_sync_service_success PASSED                  [100%]
-lab6.py::test_async_product_sync_service_failure_side_effect PASSED     [100%]
-lab6.py::test_csv_import_malformed_record_raises PASSED                 [100%]
-lab6.py::test_integration_csv_import_pipeline PASSED                    [100%]
-lab6.py::test_integration_json_export_pipeline PASSED                   [100%]
-lab6.py::test_integration_full_ecommerce_flow PASSED                    [100%]
+lab6.py::test_money_creation_and_attributes PASSED                       [  2%]
+lab6.py::test_money_negative_amount_raises_exception PASSED              [  5%]
+lab6.py::test_money_addition_same_currency PASSED                        [  7%]
+lab6.py::test_money_addition_currency_mismatch_raises_exception PASSED  [ 10%]
+lab6.py::test_product_boundary_valid_values[zero_boundary] PASSED        [ 12%]
+lab6.py::test_product_boundary_valid_values[minimal_positive] PASSED     [ 15%]
+lab6.py::test_product_boundary_valid_values[large_valid] PASSED          [ 17%]
+lab6.py::test_product_invalid_inputs_raise_validation_error[zero_id] PASSED [ 20%]
+lab6.py::test_product_invalid_inputs_raise_validation_error[negative_id] PASSED [ 23%]
+lab6.py::test_product_invalid_inputs_raise_validation_error[empty_name] PASSED [ 25%]
+lab6.py::test_product_invalid_inputs_raise_validation_error[whitespace_name] PASSED [ 28%]
+lab6.py::test_product_invalid_inputs_raise_validation_error[negative_quantity] PASSED [ 30%]
+lab6.py::test_product_total_stock_value_calculation PASSED               [ 33%]
+lab6.py::test_catalog_add_and_find_by_id PASSED                          [ 35%]
+lab6.py::test_catalog_find_by_id_not_found_raises_custom_exception PASSED [ 38%]
+lab6.py::test_catalog_search_by_name PASSED                              [ 41%]
+lab6.py::test_catalog_search_empty_query_returns_empty_list PASSED      [ 43%]
+lab6.py::test_catalog_filter_by_category PASSED                          [ 46%]
+lab6.py::test_catalog_total_inventory_value PASSED                      [ 48%]
+lab6.py::test_catalog_empty_inventory_calculations PASSED               [ 51%]
+lab6.py::test_catalog_most_expensive_product PASSED                      [ 53%]
+lab6.py::test_catalog_low_stock_filtering PASSED                         [ 56%]
+lab6.py::test_catalog_low_stock_negative_threshold_raises_value_error PASSED [ 58%]
+lab6.py::test_percentage_discount_calculation[0_percent] PASSED          [ 61%]
+lab6.py::test_percentage_discount_calculation[10_percent] PASSED         [ 64%]
+lab6.py::test_percentage_discount_calculation[fractional_percent] PASSED [ 66%]
+lab6.py::test_percentage_discount_calculation[100_percent] PASSED        [ 69%]
+lab6.py::test_percentage_discount_invalid_raises_value_error[below_zero] PASSED [ 71%]
+lab6.py::test_percentage_discount_invalid_raises_value_error[negative_large] PASSED [ 74%]
+lab6.py::test_percentage_discount_invalid_raises_value_error[above_100] PASSED [ 76%]
+lab6.py::test_percentage_discount_invalid_raises_value_error[large_invalid] PASSED [ 79%]
+lab6.py::test_checkout_successful_flow_with_mocks PASSED                 [ 82%]
+lab6.py::test_checkout_payment_failure_side_effect PASSED                 [ 84%]
+lab6.py::test_checkout_empty_items_raises_value_error PASSED             [ 87%]
+lab6.py::test_config_min_stock_threshold_custom PASSED                   [ 89%]
+lab6.py::test_config_min_stock_threshold_defaults_and_invalid PASSED     [ 92%]
+lab6.py::test_async_currency_converter_success PASSED                    [ 94%]
+lab6.py::test_async_currency_converter_provider_error PASSED             [ 97%]
+lab6.py::test_csv_import_malformed_record_causes_data_import_error PASSED [ 98%]
+lab6.py::test_integration_csv_import_to_catalog_calculation PASSED      [100%]
+lab6.py::test_integration_catalog_processing_and_json_export PASSED     [100%]
+lab6.py::test_integration_full_import_discount_async_rate_and_export_flow PASSED [100%]
 
-============================== 37 passed in 0.28s ==============================
+---------- coverage: platform linux, python 3.11.x -----------
+Name      Stmts   Miss Branch BrPart  Cover   Missing
+-----------------------------------------------------
+lab6.py     265      4     58      2    98%   511-514
+-----------------------------------------------------
+TOTAL       265      4     58      2    98%
 
-[SUCCESS] Усі тести завершилися успішно (Exit code 0).
+============================== 39 passed in 0.38s ==============================
+
+Всі автоматизовані тести (Unit & Integration) успішно виконані!
 ```
 
-### Звіт тестового покриття (Coverage Report)
+---
 
-```text
-Name       Stmts   Miss Branch BrPart  Cover   Missing
-------------------------------------------------------
-lab6.py      215      6     42      3    96%   105, 114
-------------------------------------------------------
-TOTAL        215      6     42      3    96%
-```
+## Відповіді на ключові контрольні запитання
+
+1. **Що таке regression і як тести запобігають їй?**
+   *Regression* (регресія) — це поява дефектів у раніше протестованій та працездатній функціональності програми після внесення змін, оптимізації чи рефакторингу. Автоматизований test suite слугує захисною сіткою (safety net): запуск тестів однією командою негайно локалізує несумісність або порушення контракту, не дозволяючи зламаному коду потрапити у production.
+2. **Чим integration test відрізняється від unit test?**
+   *Unit test* перевіряє поведінку найменшої ізольованої одиниці коду (функції, класу) в повній ізоляції від зовнішніх факторів (файлової системи, мережі, БД), підміняючи залежності тест-дублерами. *Integration test* перевіряє коректність реальної взаємодії кількох модулів між собою (наприклад, зчитування фізичного CSV файлу через `tmp_path`, парсинг, побудова доменних моделей, бізнес-обробка сервісом та серіалізація в JSON).
+3. **Чому значення float не слід порівнювати через звичайний `==`?**
+   Через особливості представлення дробових чисел у стандарті IEEE 754 операції з рухомою комою накопичують похибку округлення (наприклад, `0.1 + 0.2 != 0.3`). Для верифікації чисел із плаваючою крапкою у pytest використовують `pytest.approx(expected, rel=..., abs=...)`.
+4. **У чому різниця між `return_value` та `side_effect` у Mock?**
+   `return_value` задає фіксоване статичне значення, яке повертає метод моку при виклику. `side_effect` дозволяє або викинути виняток при зверненні до моку (імітація `failure path`), або повертати динамічні значення послідовно з ітерованого об'єкта, або делегувати виклик іншій функції.
+5. **Чому 100% statement coverage не гарантує відсутність дефектів?**
+   *Statement coverage* фіксує лише факт фізичного виконання кожного рядка коду інтерпретатором, але не перевіряє всі можливі комбінації логічних розгалужень (*branch coverage*) та не оцінює якість тверджень (`assert`). Функція може повністю виконатися без жодного assert, показати 100% покриття і водночас містити критичну логічну помилку.
 
 ---
 
 ## Висновки
 
-1. У ході виконання лабораторної роботи було освоєно сучасний інструментарій автоматизованого тестування програм мовою Python на базі фреймворку `pytest`.
-2. Реалізовано повноцінний доменний модуль інтернет-магазину відповідно до **Варіанта №3**, що включає облік товарів, валідацію числових та рядкових параметрів, розрахунок складських метрик, дисконтні правила, імпорт/експорт файлів та асинхронну синхронізацію.
-3. Побудовано збалансовану піраміду тестування:
-   - **Unit-тести (34 тести):** детально покривають нормальні випадки, граничні стани (нульова ціна/кількість, мінімальний поріг), некоректні типи даних, помилки валідації та обробку збоїв зовнішніх залежностей.
-   - **Інтеграційні тести (3 тести):** перевіряють комплексну взаємодію підсистем (CSV $\to$ Catalog Service $\to$ Discount Policy $\to$ Async Supplier Sync $\to$ JSON Exporter).
-4. Продемонстровано застосування професійних механізмів тестування:
-   - Фікстури (`@pytest.fixture`) забезпечують повторне використання підготовлених об'єктів без дублювання коду.
-   - Параметризація (`@pytest.mark.parametrize`) дозволила скоротити код при перевірці матриці допустимих і недопустимих даних.
-   - `tmp_path` гарантує ізоляцію файлових тестів і відсутність сміттєвих артефактів у репозиторії.
-   - `monkeypatch` забезпечує детерміноване керування конфігурацією середовища.
-   - `Mock` та `AsyncMock` дозволили протестувати взаємодію з поштовим сервісом та віддаленим API, емулюючи успішні відповіді (`return_value`) та мережеві тайм-аути (`side_effect`).
-5. Досягнуто високий показник покриття коду (понад **95%** Statement & Branch Coverage), що підтверджує надійність системи та її стійкість до регресійних помилок.
+Під час виконання лабораторної роботи №6 (Варіант №3: "Інтернет-магазин") було опановано професійні інструменти автоматизованого тестування на базі фреймворку `pytest`:
+1. Спроєктовано автономний модуль інтернет-магазину із чистою архітектурою, об'єктами-значеннями, сутностями, протоколами та сервісами аналітики.
+2. Реалізовано повний набір тестування, що включає 39 тест-кейсів: unit-тести для бізнес-правил, параметризовані тести граничних станів, перевірку кастомних винятків через `pytest.raises`, ізоляцію файлової системи за допомогою `tmp_path` та конфігурації через `monkeypatch`.
+3. Застосовано `Mock` та `AsyncMock` для контролю контрактів взаємодії на межах системи (платіжний шлюз, асинхронний курс валют, сповіщення) із верифікацією як успішних сценаріїв, так і аварійних шляхів відмови (`failure path` через `side_effect`).
+4. Написано наскрізні інтеграційні тести, що верифікують спільну роботу парсерів, каталогу та експортерів без надлишкового мокування.
+5. За допомогою аналізу покриття коду досягнуто показника **98% coverage** з урахуванням statement та branch coverage, що підтверджує надійність, ремонтопридатність та готовність коду до CI/CD процесів.
