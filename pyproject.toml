@@ -8,11 +8,7 @@ version = "0.1.0"
 description = "Laboratory work #6 (Variant 3)"
 readme = "README.md"
 requires-python = ">=3.9"
-dependencies = [
-    "pytest>=7.0.0",
-    "pytest-cov>=4.0.0",
-    "pytest-asyncio>=0.20.0"
-]
+dependencies = []
 
 [project.scripts]
 lab_06 = "lab_06.main:main"
